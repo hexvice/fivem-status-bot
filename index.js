@@ -10,313 +10,180 @@ const TOKEN = process.env.TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 const TIME_ZONE = "America/Los_Angeles";
-const UPDATE_INTERVAL_MS = 30_000;
+const UPDATE_INTERVAL = 30000;
 
+// 🔥 YOUR SERVERS
 const servers = [
   {
-    key: "vista",
     name: "The Vista",
     code: "66j376",
+    icon: "https://frontend.cfx-services.net/api/servers/icon/66j376/-1608708883.png",
 
-    // Vista resets around 10 AM / 10 PM PST
-    restartType: "dailyTimes",
-    restartHours: [10, 22],
+    restartType: "daily",
+    restartHours: [10, 22], // 10AM / 10PM PST
 
-    statusMessageId: null,
     online: null,
-    alertFlags: {
-      restart30: false,
-      restart10: false,
-      restart5: false
-    }
+    messageId: null,
+    alerts: {}
   },
   {
-    key: "windy",
     name: "Windy City",
     code: "bpvp3b",
+    icon: "https://frontend.cfx-services.net/api/servers/icon/bpvp3b/-530489038.png",
 
-    // Windy runs on a 12 hour cycle.
-    // Set this to the LAST KNOWN restart time in Los Angeles time.
-    // Example format: "2026-03-24T15:00:00"
     restartType: "interval",
     intervalHours: 12,
-    anchorLocal: "2026-03-24T15:00:00",
+    anchor: "2026-03-24T15:00:00", // CHANGE if needed
 
-    statusMessageId: null,
     online: null,
-    alertFlags: {
-      restart30: false,
-      restart10: false,
-      restart5: false
-    }
+    messageId: null,
+    alerts: {}
   }
 ];
 
-function formatCountdown(ms) {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
-}
-
-function getVistaNextRestart(server) {
-  const now = DateTime.now().setZone(TIME_ZONE);
-  const today = now.startOf("day");
-
-  const candidates = [];
-
-  for (const hour of server.restartHours) {
-    const todayCandidate = today.plus({ hours: hour });
-    const tomorrowCandidate = today.plus({ days: 1, hours: hour });
-
-    if (todayCandidate > now) candidates.push(todayCandidate);
-    candidates.push(tomorrowCandidate);
-  }
-
-  candidates.sort((a, b) => a.toMillis() - b.toMillis());
-  return candidates[0];
-}
-
-function getIntervalNextRestart(server) {
-  const now = DateTime.now().setZone(TIME_ZONE);
-  const anchor = DateTime.fromISO(server.anchorLocal, { zone: TIME_ZONE });
-
-  if (!anchor.isValid) {
-    throw new Error(`Invalid anchorLocal for ${server.name}`);
-  }
-
-  const intervalMs = server.intervalHours * 60 * 60 * 1000;
-
-  if (now <= anchor) return anchor;
-
-  const elapsedMs = now.toMillis() - anchor.toMillis();
-  const cyclesPassed = Math.floor(elapsedMs / intervalMs);
-  let nextRestart = anchor.plus({ milliseconds: (cyclesPassed + 1) * intervalMs });
-
-  if (nextRestart <= now) {
-    nextRestart = nextRestart.plus({ milliseconds: intervalMs });
-  }
-
-  return nextRestart;
-}
-
-function getNextRestart(server) {
-  if (server.restartType === "dailyTimes") {
-    return getVistaNextRestart(server);
-  }
-
-  if (server.restartType === "interval") {
-    return getIntervalNextRestart(server);
-  }
-
-  throw new Error(`Unknown restart type for ${server.name}`);
-}
-
-async function getServerData(server) {
+// 📡 FETCH DATA
+async function getServer(server) {
   try {
-    const response = await axios.get(
-      `https://servers-frontend.fivem.net/api/servers/single/${server.code}`,
-      {
-        timeout: 10000,
-        headers: {
-          "User-Agent": "Mozilla/5.0"
-        }
-      }
+    const res = await axios.get(
+      `https://servers-frontend.fivem.net/api/servers/single/${server.code}`
     );
 
-    const data = response.data?.Data;
-
-    if (!data) {
-      throw new Error("Missing FiveM server data");
-    }
-
-    const iconUrl = data.icon
-      ? `https://servers-frontend.fivem.net/api/servers/icon/${server.code}`
-      : null;
+    const data = res.data.Data;
 
     return {
       online: true,
-      players: typeof data.clients === "number" ? data.clients : 0,
-      maxPlayers: data.sv_maxclients ?? 0,
-      hostname: data.hostname || server.name,
-      iconUrl
+      players: data.clients,
+      max: data.sv_maxclients
     };
-  } catch (error) {
+  } catch {
     return {
       online: false,
       players: 0,
-      maxPlayers: 0,
-      hostname: server.name,
-      iconUrl: null
+      max: 0
     };
   }
 }
 
-async function sendStateChangeAlert(channel, server, isOnline) {
-  const text = isOnline
-    ? `🟢 **${server.name} is back online**`
-    : `🔴 **${server.name} went offline**`;
-
-  await channel.send({ content: text });
+// ⏳ TIME FORMAT
+function format(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
-async function sendRestartAlert(channel, server, minutes) {
-  await channel.send({
-    content: `⚠️ **${server.name} restart in about ${minutes} minute${minutes === 1 ? "" : "s"}**`
-  });
-}
-
-function resetRestartFlags(server) {
-  server.alertFlags.restart30 = false;
-  server.alertFlags.restart10 = false;
-  server.alertFlags.restart5 = false;
-}
-
-function maybeTriggerRestartAlerts(channel, server, msUntilRestart) {
-  const minutes = msUntilRestart / 60000;
-
-  const alerts = [];
-
-  if (minutes <= 30 && !server.alertFlags.restart30) {
-    server.alertFlags.restart30 = true;
-    alerts.push(30);
-  }
-
-  if (minutes <= 10 && !server.alertFlags.restart10) {
-    server.alertFlags.restart10 = true;
-    alerts.push(10);
-  }
-
-  if (minutes <= 5 && !server.alertFlags.restart5) {
-    server.alertFlags.restart5 = true;
-    alerts.push(5);
-  }
-
-  if (minutes > 30) {
-    resetRestartFlags(server);
-  }
-
-  return alerts.map((m) => sendRestartAlert(channel, server, m));
-}
-
-function buildEmbed(server, liveData, nextRestart) {
+// 🧠 RESTART CALC
+function getRestart(server) {
   const now = DateTime.now().setZone(TIME_ZONE);
-  const msUntilRestart = Math.max(0, nextRestart.toMillis() - now.toMillis());
-  const statusText = liveData.online ? "🟢 Online" : "🔴 Offline";
-  const color = liveData.online ? 0x22c55e : 0xef4444;
 
-  const embed = new EmbedBuilder()
+  if (server.restartType === "daily") {
+    const today = now.startOf("day");
+
+    const times = server.restartHours.map(h =>
+      today.plus({ hours: h })
+    );
+
+    const future = times.filter(t => t > now);
+    if (future.length) return future[0];
+
+    return today.plus({ days: 1, hours: server.restartHours[0] });
+  }
+
+  if (server.restartType === "interval") {
+    const anchor = DateTime.fromISO(server.anchor, { zone: TIME_ZONE });
+    const diff = now.toMillis() - anchor.toMillis();
+    const cycle = server.intervalHours * 3600000;
+
+    const next = anchor.plus({
+      milliseconds: Math.ceil(diff / cycle) * cycle
+    });
+
+    return next;
+  }
+}
+
+// 🚨 ALERT SYSTEM
+async function alerts(channel, server, ms) {
+  const min = ms / 60000;
+
+  if (min <= 30 && !server.alerts["30"]) {
+    server.alerts["30"] = true;
+    await channel.send(`⚠️ ${server.name} restart in ~30 min`);
+  }
+
+  if (min <= 10 && !server.alerts["10"]) {
+    server.alerts["10"] = true;
+    await channel.send(`⚠️ ${server.name} restart in ~10 min`);
+  }
+
+  if (min <= 5 && !server.alerts["5"]) {
+    server.alerts["5"] = true;
+    await channel.send(`⚠️ ${server.name} restart in ~5 min`);
+  }
+
+  if (min > 30) server.alerts = {};
+}
+
+// 🧾 EMBED
+function makeEmbed(server, data, next) {
+  const now = DateTime.now().setZone(TIME_ZONE);
+  const ms = next.toMillis() - now.toMillis();
+
+  return new EmbedBuilder()
     .setTitle(server.name)
-    .setColor(color)
+    .setColor(data.online ? 0x22c55e : 0xef4444)
+    .setThumbnail(server.icon)
     .addFields(
-      {
-        name: "Status",
-        value: statusText,
-        inline: true
-      },
-      {
-        name: "Players",
-        value: liveData.online
-          ? `${liveData.players} / ${liveData.maxPlayers}`
-          : "0 / 0",
-        inline: true
-      },
-      {
-        name: "Restart In",
-        value: formatCountdown(msUntilRestart),
-        inline: true
-      },
-      {
-        name: "Next Restart",
-        value: nextRestart.toFormat("ccc, LLL d • h:mm a ZZZZ"),
-        inline: false
-      }
+      { name: "Status", value: data.online ? "🟢 Online" : "🔴 Offline", inline: true },
+      { name: "Players", value: `${data.players} / ${data.max}`, inline: true },
+      { name: "Restart In", value: format(ms), inline: true }
     )
-    .setFooter({
-      text: "Live FiveM monitor"
-    })
+    .setFooter({ text: "Live FiveM Status" })
     .setTimestamp();
-
-  if (liveData.iconUrl) {
-    embed.setThumbnail(liveData.iconUrl);
-  }
-
-  return embed;
 }
 
-async function findOrCreateStatusMessage(channel, serverName) {
-  const recentMessages = await channel.messages.fetch({ limit: 20 });
-
-  const existing = recentMessages.find((msg) => {
-    if (msg.author.id !== client.user.id) return false;
-    if (!msg.embeds.length) return false;
-    return msg.embeds[0]?.title === serverName;
-  });
-
-  if (existing) return existing;
-
-  return channel.send({
-    content: `Loading ${serverName}...`
-  });
-}
-
-async function bootstrapStatusMessages(channel) {
-  for (const server of servers) {
-    const message = await findOrCreateStatusMessage(channel, server.name);
-    server.statusMessageId = message.id;
-  }
-}
-
-async function updateServerStatus(channel, server) {
-  const liveData = await getServerData(server);
-  const nextRestart = getNextRestart(server);
-  const now = DateTime.now().setZone(TIME_ZONE);
-  const msUntilRestart = Math.max(0, nextRestart.toMillis() - now.toMillis());
-
-  if (server.online === null) {
-    server.online = liveData.online;
-  } else if (server.online !== liveData.online) {
-    server.online = liveData.online;
-    await sendStateChangeAlert(channel, server, liveData.online);
-  }
-
-  await Promise.all(maybeTriggerRestartAlerts(channel, server, msUntilRestart));
-
-  const embed = buildEmbed(server, liveData, nextRestart);
-  const message = await channel.messages.fetch(server.statusMessageId);
-
-  await message.edit({
-    content: "",
-    embeds: [embed]
-  });
-}
-
-async function updateAllStatuses() {
+// 🔄 UPDATE LOOP
+async function update() {
   const channel = await client.channels.fetch(CHANNEL_ID);
 
   for (const server of servers) {
-    try {
-      await updateServerStatus(channel, server);
-    } catch (error) {
-      console.error(`Failed updating ${server.name}:`, error.message);
+    const data = await getServer(server);
+    const next = getRestart(server);
+    const ms = next.toMillis() - DateTime.now().setZone(TIME_ZONE).toMillis();
+
+    // ONLINE / OFFLINE ALERT
+    if (server.online !== null && server.online !== data.online) {
+      await channel.send(
+        data.online
+          ? `🟢 ${server.name} is back online`
+          : `🔴 ${server.name} went offline`
+      );
+    }
+
+    server.online = data.online;
+
+    // RESTART ALERTS
+    await alerts(channel, server, ms);
+
+    const embed = makeEmbed(server, data, next);
+
+    // CREATE / UPDATE MESSAGE
+    if (!server.messageId) {
+      const msg = await channel.send({ embeds: [embed] });
+      server.messageId = msg.id;
+    } else {
+      const msg = await channel.messages.fetch(server.messageId);
+      await msg.edit({ embeds: [embed] });
     }
   }
 }
 
+// 🚀 START
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
-
-  const channel = await client.channels.fetch(CHANNEL_ID);
-  await bootstrapStatusMessages(channel);
-  await updateAllStatuses();
-
-  setInterval(async () => {
-    await updateAllStatuses();
-  }, UPDATE_INTERVAL_MS);
+  await update();
+  setInterval(update, UPDATE_INTERVAL);
 });
 
 client.login(TOKEN);
