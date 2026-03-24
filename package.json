@@ -1,13 +1,14 @@
 {
   "name": "fivem-status-bot",
   "version": "1.0.0",
+  "description": "Premium-style FiveM status bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.7.9",
-    "discord.js": "^14.18.0",
-    "luxon": "^3.5.0"
+    "axios": "^1.13.6",
+    "discord.js": "^14.25.1",
+    "luxon": "^3.7.2"
   }
 }
