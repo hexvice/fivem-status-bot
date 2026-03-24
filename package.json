@@ -1,7 +1,6 @@
 {
   "name": "fivem-status-bot",
   "version": "1.0.0",
-  "description": "Paid-style FiveM live status bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
