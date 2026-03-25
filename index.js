@@ -12,7 +12,6 @@ const CHANNEL_ID = process.env.CHANNEL_ID;
 const TIME_ZONE = "America/Los_Angeles";
 const UPDATE_INTERVAL_MS = 15000;
 
-// Custom emojis
 const EMOJIS = {
   online: "<:status_online:1486096471521493113>",
   idle: "<:status_idle:1486096579579609130>",
@@ -20,7 +19,6 @@ const EMOJIS = {
   restart: "<:serverrestart_IDS:1486096687826211017>"
 };
 
-// Server config
 const servers = [
   {
     key: "vista",
@@ -28,9 +26,12 @@ const servers = [
     code: "66j376",
     icon: "https://frontend.cfx-services.net/api/servers/icon/66j376/-1608708883.png",
 
-    // Vista usually around 10 AM / 10 PM PT
-    restartType: "dailyTimes",
-    restartHours: [10, 22],
+    // Vista usually around 10:00 AM / 10:00 PM PT
+    restartType: "dailyClockTimes",
+    restartTimes: [
+      { hour: 10, minute: 0 },
+      { hour: 22, minute: 0 }
+    ],
 
     messageId: null
   },
@@ -40,8 +41,6 @@ const servers = [
     code: "bpvp3b",
     icon: "https://frontend.cfx-services.net/api/servers/icon/bpvp3b/-530489038.png",
 
-    // Windy = 12 hour cycle
-    // Change this to the LAST REAL restart time in PT when needed
     restartType: "interval",
     intervalHours: 12,
     anchorLocal: "2026-03-24T03:32:00",
@@ -66,13 +65,18 @@ function formatCountdown(ms) {
 function getNextRestart(server) {
   const now = DateTime.now().setZone(TIME_ZONE);
 
-  if (server.restartType === "dailyTimes") {
-    const dayStart = now.startOf("day");
+  if (server.restartType === "dailyClockTimes") {
     const candidates = [];
 
-    for (const hour of server.restartHours) {
-      const today = dayStart.plus({ hours: hour });
-      const tomorrow = dayStart.plus({ days: 1, hours: hour });
+    for (const t of server.restartTimes) {
+      const today = now.set({
+        hour: t.hour,
+        minute: t.minute,
+        second: 0,
+        millisecond: 0
+      });
+
+      const tomorrow = today.plus({ days: 1 });
 
       if (today > now) candidates.push(today);
       candidates.push(tomorrow);
