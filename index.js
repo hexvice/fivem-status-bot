@@ -74,7 +74,7 @@ function getNextRestart(server) {
       const today = dayStart.plus({ hours: hour });
       const tomorrow = dayStart.plus({ days: 1, hours: hour });
 
-      if (today > now) candidates.push(today);
+      if (today >= now) candidates.push(today);
       candidates.push(tomorrow);
     }
 
